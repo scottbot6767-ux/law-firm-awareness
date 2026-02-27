@@ -183,10 +183,10 @@ export default function Home() {
               <div className="url-input-wrap">
                 <label className="url-label" htmlFor="urlInput">Law Firm Website URL</label>
                 <input
-                  type="url"
+                  type="text"
                   id="urlInput"
                   className="url-input"
-                  placeholder="https://yourfirm.com"
+                  placeholder="yourfirm.com or www.yourfirm.com"
                   value={url}
                   onChange={e => setUrl(e.target.value)}
                   autoComplete="off"
