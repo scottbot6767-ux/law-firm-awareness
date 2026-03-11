@@ -19,7 +19,8 @@ const EXEMPLAR_BENCHMARKS = {
 function buildPrompt(
   url: string,
   content: string,
-  metro: { city: string; state: string; confidence: string }
+  metro: { city: string; state: string; confidence: string },
+  stature: { tier: string; floor: number }
 ): string {
   return `You are a legal marketing analyst specializing in law firm awareness and visibility. Analyze the law firm at: ${url}
 
@@ -105,16 +106,46 @@ SCORING CALIBRATION — elite benchmarks (top law firm awareness):
 - Directory & Listings: ${EXEMPLAR_BENCHMARKS.directoryAndListings}/100
 - Metro Brand Saturation: ${EXEMPLAR_BENCHMARKS.metroBrandSaturation}/100
 
-CRITICAL SCORING RULES — be strict:
-- Most law firms score 30-55 on awareness. This is the norm.
-- ONLY score social media presence high if multiple active platforms are confirmed via links.
-- If NO social links were found: socialMediaPresence = 10-25 max.
-- If NO press keywords or media logos: newsAndPR = 15-30 max.
-- If NO TV/radio/billboard keywords: broadcastAndOutdoor = 10-30 max (note it as unknown, not zero, unless the firm is small/boutique).
-- If NO directory links found: directoryAndListings = 20-40 (directories may exist even if not linked).
-- Vanity phone number = strong metroBrandSaturation signal (+15 pts).
-- High review count (500+) = strong metroBrandSaturation signal (+10 pts).
-- Meta Pixel = social advertising signal → boost socialMediaActivity.
+IMPORTANT — JS-RENDERED SITE DETECTION:
+If the scraped content appears thin, repetitive, or mostly CSS/JS noise (common with React, Next.js, Drupal, Angular sites), DO NOT assume the firm lacks these signals. Instead:
+- If the site appears to be a major, well-known firm (based on URL, title, or any detectable branding), score based on reasonable inference of what a firm of that caliber likely has.
+- If Meta Pixel or Google Analytics is detected but social links are not, the links are likely rendered client-side — score socialMediaPresence at 35-50 (unknown, not absent).
+- If the site loads but body text is minimal, note this as a scraping limitation, not a firm deficiency.
+- Look for signals in schema.org data, meta tags, and title — these survive JS rendering.
+
+FIRM STATURE & AWARENESS FLOOR:
+This firm's detected stature tier is: ${stature.tier.toUpperCase()}
+Minimum awareness score (floor): ${stature.floor}/100
+
+The stature tier is determined by objective signals found on the website:
+- MEGA tier (floor 75): $10B+ recovered, 1000+ attorneys, or 20+ offices. These are industry-dominant firms (e.g. Morgan & Morgan, Kirkland & Ellis) whose brand awareness is a given — they are household names or institutional powerhouses. Score them accordingly.
+- NATIONAL tier (floor 60): $1B+ recovered, 100+ attorneys, 10+ offices, or nationwide presence
+- REGIONAL tier (floor 50): $100M+ recovered, 5+ offices, 50+ attorneys, 500+ reviews, or 3+ states
+- ESTABLISHED tier (floor 45): $10M+ recovered, 3+ offices, 100+ reviews, 10+ years, or 3+ major awards
+- STANDARD tier (no floor): None of the above signals detected
+
+CRITICAL: The overallScore MUST NOT be lower than ${stature.floor}. These stature signals ARE awareness signals — a firm that has recovered billions of dollars, operates across multiple states, and has hundreds of reviews CANNOT have low awareness. Their brand exists in courtrooms, communities, and client networks even if their website doesn't explicitly showcase every channel.
+
+For MEGA tier firms: these are among the most recognized legal brands in the world. Even if their website doesn't showcase TV ads or community sponsorships, their sheer scale guarantees high awareness. Score individual categories generously — a 1000+ attorney firm with 20+ offices has brand saturation, directory presence, and institutional recognition that smaller firms cannot match. The overallScore should typically be 75-90.
+
+Individual category scores CAN still be low if genuinely no signals exist in that specific dimension, but the overallScore composite must respect the floor. If the raw category average would fall below the floor, boost the categories where the firm's stature most likely implies hidden strength (metroBrandSaturation, brandConsistency, directoryAndListings).
+
+SCORING CALIBRATION RULES:
+- Average/mediocre law firms score 35-50 on awareness.
+- Well-established firms with visible awareness signals should score 50-65.
+- Strong awareness firms with multiple channels active should score 65-78.
+- Elite awareness (top firms in their market) score 78+.
+- The overallScore should reflect the COMPOSITE picture — if a firm has strong signals in 4-5 categories, the overall should be solidly above 55 even if 2-3 categories are weak.
+
+CATEGORY-SPECIFIC RULES:
+- socialMediaPresence: If 2+ platform links found → 45-65. If 3+ platforms → 55-75. If NO links AND no pixels → 10-25. If pixels but no links → 30-45.
+- socialMediaActivity: If Meta Pixel or Google Ads detected → minimum 35. Active posting signals → 50+.
+- newsAndPR: If press keywords OR media logos found → 40-60. If BOTH → 55-75. If NEITHER → 15-30.
+- broadcastAndOutdoor: If TV/radio/billboard keywords found → 45-65. If NONE → 20-35 (unknown ≠ absent).
+- communityAndSponsorship: If sponsorship/charity keywords found → 40-60. If foundation or scholarship → 55-70. If NONE → 15-30.
+- directoryAndListings: If 2+ directory links → 55-75. If 1 → 35-50. If NONE → 25-40 (most firms ARE listed).
+- metroBrandSaturation: Vanity phone = +15 pts. 500+ reviews = +10 pts. 100+ reviews = +5 pts. Multiple offices = +10 pts.
+- brandConsistency: If schema.org data matches firm branding → 45-65. If slogan/tagline detected → +10.
 - Be specific in findings — name platforms, publications, directories by name. No generic findings.
 - Findings should be 8-14 words each.
 - criticalGap should create urgency without fully solving the problem.`;
@@ -146,7 +177,7 @@ export async function POST(request: NextRequest) {
     try {
       site = await scrapeSite(normalizedUrl);
     } catch (err: any) {
-      site = { homepage: null, subpages: [], errors: [err.message] };
+      site = { homepage: null, subpages: [], errors: [err.message], stature: { dollarsRecovered: null, dollarsRecoveredNumeric: 0, officeCount: 0, attorneyCount: 0, yearsInPractice: 0, reviewVolume: 0, awardBadgeCount: 0, multiStatePresence: [], hasVanityPhone: false, statureTier: 'standard' as const, statureFloor: 0 } };
     }
 
     const content = buildContentSummary(site);
@@ -157,7 +188,8 @@ export async function POST(request: NextRequest) {
     const metro = detectMetro(allText, allSignals?.address ?? null, allSignals?.phone ?? null);
 
     // Build prompt and call Claude
-    const prompt = buildPrompt(normalizedUrl, content, metro);
+    const stature = site.stature;
+    const prompt = buildPrompt(normalizedUrl, content, metro, { tier: stature.statureTier, floor: stature.statureFloor });
     const anthropic = new Anthropic({ apiKey });
 
     const message = await anthropic.messages.create({
@@ -176,6 +208,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ...result,
       detectedMetro: metro,
+      firmStature: {
+        tier: site.stature.statureTier,
+        floor: site.stature.statureFloor,
+        signals: {
+          dollarsRecovered: site.stature.dollarsRecovered,
+          officeCount: site.stature.officeCount,
+          attorneyCount: site.stature.attorneyCount,
+          yearsInPractice: site.stature.yearsInPractice,
+          reviewVolume: site.stature.reviewVolume,
+          awardBadgeCount: site.stature.awardBadgeCount,
+          multiStatePresence: site.stature.multiStatePresence,
+          hasVanityPhone: site.stature.hasVanityPhone,
+        },
+      },
       scrapedPagesCount: (site.homepage ? 1 : 0) + site.subpages.length,
       scrapingErrors: site.errors,
     });
