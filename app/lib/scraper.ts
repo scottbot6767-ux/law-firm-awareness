@@ -41,6 +41,7 @@ export interface ScrapedPage {
   bodyText: string;
   html: string;
   signals: AwarenessSignals;
+  internalLinks: { href: string; text: string }[];
 }
 
 export interface ScrapedSite {
@@ -481,15 +482,31 @@ async function fetchPage(url: string): Promise<ScrapedPage | null> {
     if (!res.ok) return null;
 
     const html = await res.text();
-    const $ = cheerio.load(html);
+    const $raw = cheerio.load(html);
 
-    // Clean up noise
+    // Extract internal links from full HTML before truncation
+    const base = new URL(url);
+    const internalLinks: { href: string; text: string }[] = [];
+    $raw('a[href]').each((_, el) => {
+      const href = $raw(el).attr('href') || '';
+      const text = $raw(el).text().trim().replace(/\s+/g, ' ');
+      try {
+        const resolved = new URL(href, url);
+        if (resolved.hostname === base.hostname && resolved.pathname !== '/' && resolved.pathname !== '') {
+          internalLinks.push({ href: resolved.origin + resolved.pathname.replace(/\/$/, ''), text });
+        }
+      } catch {}
+    });
+
+    const signals = extractSignals(html, $raw);
+
+    // Clean up noise for body text extraction
+    const $ = cheerio.load(html);
     $('script, style, noscript, iframe').remove();
     const bodyText = $('body').text().replace(/\s+/g, ' ').trim().slice(0, 8000);
-    const title = $('title').text().trim() || null;
-    const signals = extractSignals(html, cheerio.load(html));
+    const title = $raw('title').text().trim() || null;
 
-    return { url, title, bodyText, html: html.slice(0, 15000), signals };
+    return { url, title, bodyText, html: html.slice(0, 15000), signals, internalLinks };
   } catch {
     return null;
   }
@@ -508,26 +525,18 @@ export async function scrapeSite(url: string): Promise<ScrapedSite> {
   const awarenessKeywords = ['about', 'media', 'press', 'news', 'community', 'contact', 'team', 'attorney', 'lawyer', 'result', 'review', 'testimonial', 'award', 'recognition', 'sponsor'];
 
   if (homepage) {
-    const $ = cheerio.load(homepage.html);
     const navUrls: { url: string; priority: number }[] = [];
-    $('a[href]').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      try {
-        const resolved = new URL(href, url);
-        if (resolved.hostname !== base.hostname) return;
-        if (resolved.pathname === '/' || resolved.pathname === '') return;
-        if (/\.(pdf|jpg|png|gif|svg|css|js|zip)$/i.test(resolved.pathname)) return;
-        const normalized = resolved.origin + resolved.pathname.replace(/\/$/, '');
-        if (visited.has(normalized)) return;
-        visited.add(normalized);
-        const pathAndText = (resolved.pathname + ' ' + ($(el).text() || '')).toLowerCase();
-        let priority = 0;
-        for (const k of awarenessKeywords) {
-          if (pathAndText.includes(k)) priority++;
-        }
-        if (priority > 0) navUrls.push({ url: normalized, priority });
-      } catch {}
-    });
+    for (const link of homepage.internalLinks) {
+      if (/\.(pdf|jpg|png|gif|svg|css|js|zip)$/i.test(link.href)) continue;
+      if (visited.has(link.href)) continue;
+      visited.add(link.href);
+      const pathAndText = (link.href + ' ' + link.text).toLowerCase();
+      let priority = 0;
+      for (const k of awarenessKeywords) {
+        if (pathAndText.includes(k)) priority++;
+      }
+      if (priority > 0) navUrls.push({ url: link.href, priority });
+    }
     navUrls.sort((a, b) => b.priority - a.priority);
     // Fetch nav subpages in parallel for speed
     const navResults = await Promise.allSettled(
