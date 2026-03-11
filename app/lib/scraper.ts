@@ -222,17 +222,19 @@ function extractSignals(html: string, $: cheerio.CheerioAPI): AwarenessSignals {
 function detectStature(pages: ScrapedPage[]): StatureSignals {
   const allText = pages.map(p => p.bodyText).join(' ').toLowerCase();
   const allHtml = pages.map(p => p.html).join(' ').toLowerCase();
+  // Also check raw HTML for stature signals (survives JS rendering better)
+  const combinedText = allText + ' ' + allHtml;
 
   // --- Dollars recovered ---
   let dollarsRecovered: string | null = null;
   let dollarsRecoveredNumeric = 0;
 
   // Match patterns like "$4.1 billion", "$600+ million", "$2 billion recovered"
-  const billionMatch = allText.match(/\$\s*([\d,.]+)\s*\+?\s*billion/i);
-  const millionMatch = allText.match(/\$\s*([\d,.]+)\s*\+?\s*million/i);
+  const billionMatch = combinedText.match(/\$\s*([\d,.]+)\s*\+?\s*billion/i);
+  const millionMatch = combinedText.match(/\$\s*([\d,.]+)\s*\+?\s*million/i);
   // Also match "over $X billion/million"
-  const overBillionMatch = allText.match(/over\s*\$\s*([\d,.]+)\s*\+?\s*billion/i);
-  const overMillionMatch = allText.match(/over\s*\$\s*([\d,.]+)\s*\+?\s*million/i);
+  const overBillionMatch = combinedText.match(/over\s*\$\s*([\d,.]+)\s*\+?\s*billion/i);
+  const overMillionMatch = combinedText.match(/over\s*\$\s*([\d,.]+)\s*\+?\s*million/i);
 
   if (billionMatch || overBillionMatch) {
     const match = overBillionMatch || billionMatch;
@@ -271,7 +273,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
   officeCount = schemaLocations.size;
 
   // Also check for "X offices" or "X locations" in text
-  const officeTextMatch = allText.match(/(\d+)\s*(?:offices|locations|office locations)/i);
+  const officeTextMatch = combinedText.match(/(\d+)\s*(?:offices|locations|office locations)/i);
   if (officeTextMatch) {
     const textCount = parseInt(officeTextMatch[1]);
     if (textCount > officeCount) officeCount = textCount;
@@ -286,7 +288,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
 
   // --- Attorney count ---
   let attorneyCount = 0;
-  const attorneyTextMatch = allText.match(/(\d+)\s*\+?\s*(?:attorneys|lawyers)/i);
+  const attorneyTextMatch = combinedText.match(/(\d+)\s*\+?\s*(?:attorneys|lawyers)/i);
   if (attorneyTextMatch) {
     attorneyCount = parseInt(attorneyTextMatch[1]);
   }
@@ -310,7 +312,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
   let yearsInPractice = 0;
   const currentYear = new Date().getFullYear();
   // "since 1985", "established 1992", "founded in 1990", "est. 1985"
-  const yearMatch = allText.match(/(?:since|established|founded|est\.?|serving\s+since)\s*(?:in\s+)?(\d{4})/i);
+  const yearMatch = combinedText.match(/(?:since|established|founded|est\.?|serving\s+since)\s*(?:in\s+)?(\d{4})/i);
   if (yearMatch) {
     const foundedYear = parseInt(yearMatch[1]);
     if (foundedYear > 1900 && foundedYear <= currentYear) {
@@ -333,7 +335,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
     }
   }
   // Also match "X+ years" or "over X years"
-  const yearsExpMatch = allText.match(/(?:over\s+)?(\d+)\s*\+?\s*years?\s*(?:of\s+)?(?:experience|practice|serving|combined)/i);
+  const yearsExpMatch = combinedText.match(/(?:over\s+)?(\d+)\s*\+?\s*years?\s*(?:of\s+)?(?:experience|practice|serving|combined)/i);
   if (yearsExpMatch) {
     const yrs = parseInt(yearsExpMatch[1]);
     if (yrs > yearsInPractice) yearsInPractice = yrs;
@@ -364,7 +366,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
     }
   }
   // From text mentions
-  const reviewTextMatch = allText.match(/(\d[\d,]+)\s*\+?\s*(?:reviews?|5[\s-]*star|client\s+reviews?|satisfied\s+clients?)/i);
+  const reviewTextMatch = combinedText.match(/(\d[\d,]+)\s*\+?\s*(?:reviews?|5[\s-]*star|client\s+reviews?|satisfied\s+clients?)/i);
   if (reviewTextMatch) {
     const count = parseInt(reviewTextMatch[1].replace(/,/g, ''));
     if (count > reviewVolume) reviewVolume = count;
@@ -381,7 +383,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
   ];
   let awardBadgeCount = 0;
   for (const pattern of awardPatterns) {
-    if (pattern.test(allText)) awardBadgeCount++;
+    if (pattern.test(combinedText)) awardBadgeCount++;
   }
 
   // --- Multi-state presence ---
@@ -406,7 +408,7 @@ function detectStature(pages: ScrapedPage[]): StatureSignals {
     }
   }
   // Check for "nationwide" or "national"
-  if (/\bnationwide\b|\bnational\b|\bacross\s+the\s+(?:country|nation|united\s+states)\b/i.test(allText)) {
+  if (/\bnationwide\b|\bnational\b|\bacross\s+the\s+(?:country|nation|united\s+states)\b/i.test(combinedText)) {
     if (!multiStatePresence.includes('NATIONAL')) multiStatePresence.push('NATIONAL');
   }
 
@@ -527,22 +529,27 @@ export async function scrapeSite(url: string): Promise<ScrapedSite> {
       } catch {}
     });
     navUrls.sort((a, b) => b.priority - a.priority);
-    for (const navUrl of navUrls.slice(0, 4)) {
-      const page = await fetchPage(navUrl.url);
-      if (page) subpages.push(page);
+    // Fetch nav subpages in parallel for speed
+    const navResults = await Promise.allSettled(
+      navUrls.slice(0, 4).map(navUrl => fetchPage(navUrl.url))
+    );
+    for (const r of navResults) {
+      if (r.status === 'fulfilled' && r.value) subpages.push(r.value);
     }
   }
 
-  // Fallback: try common awareness-relevant paths if we found fewer than 3 subpages
-  const fallbackPaths = ['/about', '/about-us', '/media', '/press', '/news', '/community', '/contact', '/results', '/case-results', '/testimonials', '/reviews', '/awards'];
+  // Fallback: try common awareness-relevant paths in parallel if we found fewer than 3
+  const fallbackPaths = ['/about', '/about-us', '/media', '/press', '/news', '/community', '/results', '/case-results', '/testimonials', '/reviews'];
   if (subpages.length < 3) {
-    for (const path of fallbackPaths) {
-      if (subpages.length >= 5) break;
-      const subUrl = `${base.origin}${path}`;
-      if (visited.has(subUrl)) continue;
-      visited.add(subUrl);
-      const page = await fetchPage(subUrl);
-      if (page) subpages.push(page);
+    const fallbackUrls = fallbackPaths
+      .map(p => `${base.origin}${p}`)
+      .filter(u => !visited.has(u))
+      .slice(0, 4);
+    const fallbackResults = await Promise.allSettled(
+      fallbackUrls.map(u => fetchPage(u))
+    );
+    for (const r of fallbackResults) {
+      if (r.status === 'fulfilled' && r.value) subpages.push(r.value);
     }
   }
 

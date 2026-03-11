@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { scrapeSite, buildContentSummary } from '../../lib/scraper';
 import { detectMetro } from '../../lib/metroDetector';
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 const EXEMPLAR_BENCHMARKS = {
   socialMediaPresence: 84,
