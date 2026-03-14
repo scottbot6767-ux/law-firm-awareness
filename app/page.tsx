@@ -163,10 +163,10 @@ export default function Home() {
       </div>
 
       <header>
-        <a className="logo" href="https://scottbot6767-ux.github.io/law-firm-audits/" style={{ display: 'flex', alignItems: 'center' }}>
+        <a className="logo" href="https://lawfirmaudits.com" style={{ display: 'flex', alignItems: 'center' }}>
           <img src="/logo.png" alt="LawFirmAudits" style={{ height: '26px', width: 'auto', display: 'block', mixBlendMode: 'multiply' }} />
         </a>
-        <div className="header-tag">Powered by Rankings.io</div>
+        <a href="https://lawfirmaudits.com" className="header-tag" style={{textDecoration:'none',color:'inherit'}}>LawFirmAudits.com</a>
       </header>
 
       {/* INPUT SECTION */}
