@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { decodeResults } from '../lib/share';
-import { ResultsSection, AnalysisResult } from '../page';
+import { ResultsSection, AnalysisResult } from '../results';
 
 export default function SharePage() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
