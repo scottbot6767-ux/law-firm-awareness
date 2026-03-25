@@ -3,6 +3,23 @@ import Anthropic from '@anthropic-ai/sdk';
 import { scrapeSite, buildContentSummary } from '../../lib/scraper';
 import { detectMetro } from '../../lib/metroDetector';
 
+function repairAndParseJSON(raw: string): any {
+  let text = raw.replace(/```json|```/g, '').trim();
+  try { return JSON.parse(text); } catch {}
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error('No JSON object found in LLM response');
+  text = jsonMatch[0];
+  try { return JSON.parse(text); } catch {}
+  text = text
+    .replace(/,\s*([}\]])/g, '$1')
+    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":')
+    .replace(/:\s*'([^']*)'/g, ': "$1"')
+    .replace(/\n/g, ' ');
+  try { return JSON.parse(text); } catch (e: any) {
+    throw new Error(`Failed to parse LLM JSON: ${e.message}`);
+  }
+}
+
 export const maxDuration = 60;
 
 const EXEMPLAR_BENCHMARKS = {
@@ -203,7 +220,7 @@ export async function POST(request: NextRequest) {
       .map(b => b.text)
       .join('');
 
-    const result = JSON.parse(text.replace(/```json|```/g, '').trim());
+    const result = repairAndParseJSON(text);
 
     return NextResponse.json({
       ...result,
