@@ -617,7 +617,7 @@ export function buildContentSummary(site: ScrapedSite): string {
   if (site.homepage) {
     parts.push(`=== HOMEPAGE (${site.homepage.url}) ===`);
     parts.push(`Title: ${site.homepage.title}`);
-    parts.push(site.homepage.bodyText.slice(0, 4000));
+    parts.push(site.homepage.bodyText.slice(0, 2000));
 
     const s = site.homepage.signals;
     parts.push('\n--- AWARENESS SIGNALS (HOMEPAGE) ---');
@@ -642,9 +642,9 @@ export function buildContentSummary(site: ScrapedSite): string {
     }
   }
 
-  site.subpages.forEach(page => {
+  site.subpages.slice(0, 5).forEach(page => {
     parts.push(`\n=== SUBPAGE: ${page.url} ===`);
-    parts.push(page.bodyText.slice(0, 1500));
+    parts.push(page.bodyText.slice(0, 800));
     const s = page.signals;
     if (s.pressKeywords.length) parts.push(`Press keywords: ${s.pressKeywords.join(', ')}`);
     if (s.sponsorshipKeywords.length) parts.push(`Sponsorship keywords: ${s.sponsorshipKeywords.join(', ')}`);

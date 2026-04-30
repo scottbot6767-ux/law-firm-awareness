@@ -3,20 +3,35 @@ import Anthropic from '@anthropic-ai/sdk';
 import { scrapeSite, buildContentSummary } from '../../lib/scraper';
 import { detectMetro } from '../../lib/metroDetector';
 
+/** Attempt to parse LLM JSON output, repairing common issues (trailing commas, truncation, code fences). */
 function repairAndParseJSON(raw: string): any {
   let text = raw.replace(/```json|```/g, '').trim();
+  // Try direct parse first
   try { return JSON.parse(text); } catch {}
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  // Extract outermost JSON object
+  const jsonMatch = text.match(/\{[\s\S]*\}?\s*$/);
   if (!jsonMatch) throw new Error('No JSON object found in LLM response');
   text = jsonMatch[0];
   try { return JSON.parse(text); } catch {}
+  // Repair common LLM JSON errors
   text = text
-    .replace(/,\s*([}\]])/g, '$1')
-    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":')
-    .replace(/:\s*'([^']*)'/g, ': "$1"')
-    .replace(/\n/g, ' ');
-  try { return JSON.parse(text); } catch (e: any) {
-    throw new Error(`Failed to parse LLM JSON: ${e.message}`);
+    .replace(/,\s*([}\]])/g, '$1')           // trailing commas
+    .replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":') // unquoted keys
+    .replace(/:\s*'([^']*)'/g, ': "$1"')       // single-quoted strings
+    .replace(/\n/g, ' ');                      // newlines inside strings
+  try { return JSON.parse(text); } catch {}
+  // Try closing truncated JSON
+  let repaired = text.replace(/,\s*$/, '');
+  repaired = repaired.replace(/"[^"]*$/, '""');
+  const stack: string[] = [];
+  for (const ch of repaired) {
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if (ch === '}' || ch === ']') stack.pop();
+  }
+  repaired += stack.reverse().join('');
+  try { return JSON.parse(repaired); } catch (e: any) {
+    throw new Error(`Failed to parse LLM JSON after repair: ${e.message}\nFirst 500 chars: ${raw.slice(0, 500)}`);
   }
 }
 
@@ -62,50 +77,50 @@ Return ONLY valid JSON — no markdown, no explanation, no preamble:
     "socialMediaPresence": {
       "score": number,
       "label": "Social Media Setup",
-      "summary": "string (1 sentence, specific — name which platforms are present or absent)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (1 sentence, name platforms present or absent)",
+      "findings": ["string", "string"]
     },
     "socialMediaActivity": {
       "score": number,
       "label": "Social Engagement & Activity",
-      "summary": "string (what signals suggest activity level — posting frequency, ad pixels found, etc.)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (activity level, ad pixels found)",
+      "findings": ["string", "string"]
     },
     "brandConsistency": {
       "score": number,
       "label": "Cross-Channel Brand Consistency",
-      "summary": "string (is the name/tagline/visual identity consistent across platforms and site?)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (name/tagline/identity consistency)",
+      "findings": ["string", "string"]
     },
     "newsAndPR": {
       "score": number,
       "label": "News & Media Coverage",
-      "summary": "string (press sections, media logos, journalist quotes, publications found?)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (press sections, media logos found?)",
+      "findings": ["string", "string"]
     },
     "broadcastAndOutdoor": {
       "score": number,
       "label": "Broadcast & Outdoor Advertising",
-      "summary": "string (TV, radio, billboard signals — be honest about what is unknown)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (TV, radio, billboard signals)",
+      "findings": ["string", "string"]
     },
     "communityAndSponsorship": {
       "score": number,
       "label": "Community & Sponsorship Presence",
-      "summary": "string (sponsorships, charities, local events, foundations found?)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (sponsorships, charities, events)",
+      "findings": ["string", "string"]
     },
     "directoryAndListings": {
       "score": number,
       "label": "Legal Directory & Listings",
-      "summary": "string (which directories are linked — Avvo, Martindale, FindLaw, Super Lawyers, etc.)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (which directories linked)",
+      "findings": ["string", "string"]
     },
     "metroBrandSaturation": {
       "score": number,
       "label": "Metro Brand Saturation",
-      "summary": "string (vanity phone numbers, review volume, branded recall signals, local dominance indicators)",
-      "findings": ["string", "string", "string"]
+      "summary": "string (vanity phone, review volume, local dominance)",
+      "findings": ["string", "string"]
     }
   },
   "topStrength": "string (single strongest awareness signal — be specific)",
@@ -123,49 +138,21 @@ SCORING CALIBRATION — elite benchmarks (top law firm awareness):
 - Directory & Listings: ${EXEMPLAR_BENCHMARKS.directoryAndListings}/100
 - Metro Brand Saturation: ${EXEMPLAR_BENCHMARKS.metroBrandSaturation}/100
 
-IMPORTANT — JS-RENDERED SITE DETECTION:
-If the scraped content appears thin, repetitive, or mostly CSS/JS noise (common with React, Next.js, Drupal, Angular sites), DO NOT assume the firm lacks these signals. Instead:
-- If the site appears to be a major, well-known firm (based on URL, title, or any detectable branding), score based on reasonable inference of what a firm of that caliber likely has.
-- If Meta Pixel or Google Analytics is detected but social links are not, the links are likely rendered client-side — score socialMediaPresence at 35-50 (unknown, not absent).
-- If the site loads but body text is minimal, note this as a scraping limitation, not a firm deficiency.
-- Look for signals in schema.org data, meta tags, and title — these survive JS rendering.
+FIRM STATURE: ${stature.tier.toUpperCase()} (floor: ${stature.floor}/100)
+The overallScore MUST be >= ${stature.floor}.
 
-FIRM STATURE & AWARENESS FLOOR:
-This firm's detected stature tier is: ${stature.tier.toUpperCase()}
-Minimum awareness score (floor): ${stature.floor}/100
-
-The stature tier is determined by objective signals found on the website:
-- MEGA tier (floor 75): $10B+ recovered, 1000+ attorneys, or 20+ offices. These are industry-dominant firms (e.g. Morgan & Morgan, Kirkland & Ellis) whose brand awareness is a given — they are household names or institutional powerhouses. Score them accordingly.
-- NATIONAL tier (floor 60): $1B+ recovered, 100+ attorneys, 10+ offices, or nationwide presence
-- REGIONAL tier (floor 50): $100M+ recovered, 5+ offices, 50+ attorneys, 500+ reviews, or 3+ states
-- ESTABLISHED tier (floor 45): $10M+ recovered, 3+ offices, 100+ reviews, 10+ years, or 3+ major awards
-- STANDARD tier (no floor): None of the above signals detected
-
-CRITICAL: The overallScore MUST NOT be lower than ${stature.floor}. These stature signals ARE awareness signals — a firm that has recovered billions of dollars, operates across multiple states, and has hundreds of reviews CANNOT have low awareness. Their brand exists in courtrooms, communities, and client networks even if their website doesn't explicitly showcase every channel.
-
-For MEGA tier firms: these are among the most recognized legal brands in the world. Even if their website doesn't showcase TV ads or community sponsorships, their sheer scale guarantees high awareness. Score individual categories generously — a 1000+ attorney firm with 20+ offices has brand saturation, directory presence, and institutional recognition that smaller firms cannot match. The overallScore should typically be 75-90.
-
-Individual category scores CAN still be low if genuinely no signals exist in that specific dimension, but the overallScore composite must respect the floor. If the raw category average would fall below the floor, boost the categories where the firm's stature most likely implies hidden strength (metroBrandSaturation, brandConsistency, directoryAndListings).
-
-SCORING CALIBRATION RULES:
-- Average/mediocre law firms score 35-50 on awareness.
-- Well-established firms with visible awareness signals should score 50-65.
-- Strong awareness firms with multiple channels active should score 65-78.
-- Elite awareness (top firms in their market) score 78+.
-- The overallScore should reflect the COMPOSITE picture — if a firm has strong signals in 4-5 categories, the overall should be solidly above 55 even if 2-3 categories are weak.
-
-CATEGORY-SPECIFIC RULES:
-- socialMediaPresence: If 2+ platform links found → 45-65. If 3+ platforms → 55-75. If NO links AND no pixels → 10-25. If pixels but no links → 30-45.
-- socialMediaActivity: If Meta Pixel or Google Ads detected → minimum 35. Active posting signals → 50+.
-- newsAndPR: If press keywords OR media logos found → 40-60. If BOTH → 55-75. If NEITHER → 15-30.
-- broadcastAndOutdoor: If TV/radio/billboard keywords found → 45-65. If NONE → 20-35 (unknown ≠ absent).
-- communityAndSponsorship: If sponsorship/charity keywords found → 40-60. If foundation or scholarship → 55-70. If NONE → 15-30.
-- directoryAndListings: If 2+ directory links → 55-75. If 1 → 35-50. If NONE → 25-40 (most firms ARE listed).
-- metroBrandSaturation: Vanity phone = +15 pts. 500+ reviews = +10 pts. 100+ reviews = +5 pts. Multiple offices = +10 pts.
-- brandConsistency: If schema.org data matches firm branding → 45-65. If slogan/tagline detected → +10.
-- Be specific in findings — name platforms, publications, directories by name. No generic findings.
-- Findings should be 8-14 words each.
-- criticalGap should create urgency without fully solving the problem.`;
+SCORING RULES:
+- socialMediaPresence: 2+ platforms → 45-65, 3+ → 55-75, none → 10-25, pixels only → 30-45
+- socialMediaActivity: Meta Pixel/GA detected → min 35
+- newsAndPR: press keywords OR media logos → 40-60, both → 55-75, neither → 15-30
+- broadcastAndOutdoor: TV/radio/billboard keywords → 45-65, none → 20-35
+- communityAndSponsorship: keywords found → 40-60, foundation/scholarship → 55-70, none → 15-30
+- directoryAndListings: 2+ links → 55-75, 1 → 35-50, none → 25-40
+- metroBrandSaturation: vanity phone +15, 500+ reviews +10, 100+ reviews +5, multi-office +10
+- brandConsistency: schema matches branding → 45-65, slogan → +10
+- If scraped content is thin (JS site), infer from stature tier — don't penalize for scraping limits
+- Findings: 8-14 words each, be specific, name platforms/directories by name
+- criticalGap: create urgency without fully solving the problem`;
 }
 
 export async function POST(request: NextRequest) {
@@ -210,9 +197,10 @@ export async function POST(request: NextRequest) {
     const anthropic = new Anthropic({ apiKey });
 
     const message = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 4000,
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
     });
 
     const text = message.content
@@ -222,8 +210,24 @@ export async function POST(request: NextRequest) {
 
     const result = repairAndParseJSON(text);
 
+    // Enforce stature floor programmatically (don't rely on prompt alone)
+    const rawScore = result.overallScore;
+    const adjustedScore = Math.max(rawScore, stature.statureFloor);
+    const wasAdjusted = adjustedScore > rawScore;
+
     return NextResponse.json({
       ...result,
+      overallScore: adjustedScore,
+      rawScore,
+      statureAdjustment: wasAdjusted
+        ? `Raw score of ${rawScore} was raised to ${adjustedScore} based on ${stature.statureTier} stature tier floor. ` +
+          `This firm's objective stature signals (e.g. ${[
+            stature.dollarsRecovered ? `${stature.dollarsRecovered} recovered` : null,
+            stature.attorneyCount > 0 ? `${stature.attorneyCount} attorneys` : null,
+            stature.officeCount > 0 ? `${stature.officeCount} offices` : null,
+            stature.reviewVolume > 0 ? `${stature.reviewVolume} reviews` : null,
+          ].filter(Boolean).join(', ') || 'detected signals'}) indicate awareness that may not be fully visible on-site.`
+        : null,
       detectedMetro: metro,
       firmStature: {
         tier: site.stature.statureTier,
